@@ -1,808 +1,172 @@
-from binascii import a2b_base64
-from copy import deepcopy
-
-from embit import bip32, script
-from embit.psbt import PSBT, DerivationPath
-
 from base import FlowTest, FlowStep
-from psbt_testing_util import (NUMS_INTERNAL_KEY, PSBTTestData, claim_seed_owns_key,
-    create_op_return_output, create_output, foreign_public_key, p2tr_with_script_tree,
-    repoint_change, root_for_seed, set_input_locking_script, tapleaf_hash)
 
 from seedsigner.controller import Controller
-from seedsigner.views.view import MainMenuView, View
+from seedsigner.views.view import MainMenuView
 from seedsigner.views import scan_views, seed_views, psbt_views
-from seedsigner.models.psbt_parser import OPCODES, PSBTParser
-from seedsigner.models.seed import Seed
 from seedsigner.models.settings import SettingsConstants
 
 
+# TODO: Cleanup: convert TAB spacing to SPACE
 class TestPSBTFlows(FlowTest):
 
-    def test_scan_psbt_first_then_correct_seedqr_flow(self):
-        """
-            Selecting "Scan" from the MainMenuView and scanning a PSBT should enter the PSBTSelectSeedView flow
-            when Scan a Seed is selected from PSBTSelectSeedView it should enter the ScanView flow
-            when a SeedQR is scanned it should enter the PSBTOverviewView flow
-            since the PSBT has change no warning is displayed and it should enter the PSBTMathView flow
-            since the PSBT is not a self transfer it should enter the PSBTAddressDetailsView flow
-        """
-        def load_psbt_into_decoder(view: scan_views.ScanView):
-            view.decoder.add_data(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_2_INPUTS)
-
-        def load_seed_into_decoder(view: scan_views.ScanView):
-            view.decoder.add_data("080115060387063104071857067618681125136207731354")
-    
-        self.run_sequence([
-            FlowStep(MainMenuView, button_data_selection=MainMenuView.SCAN),
-            FlowStep(scan_views.ScanView, before_run=load_psbt_into_decoder),  # simulate read PSBT; ret val is ignored
-            FlowStep(psbt_views.PSBTSelectSeedView, button_data_selection=psbt_views.PSBTSelectSeedView.SCAN_SEED),
-            FlowStep(scan_views.ScanSeedQRView, before_run=load_seed_into_decoder),
-            FlowStep(seed_views.SeedFinalizeView, button_data_selection=seed_views.SeedFinalizeView.FINALIZE),
-            FlowStep(seed_views.SeedOptionsView, is_redirect=True),
-            FlowStep(psbt_views.PSBTOverviewView),
-            FlowStep(psbt_views.PSBTMathView),
-            FlowStep(psbt_views.PSBTAddressDetailsView, button_data_selection=0),
-            FlowStep(psbt_views.PSBTChangeDetailsView, button_data_selection=psbt_views.PSBTChangeDetailsView.NEXT),
-            FlowStep(psbt_views.PSBTChangeDetailsView, button_data_selection=psbt_views.PSBTChangeDetailsView.NEXT),
-            FlowStep(psbt_views.PSBTChangeDetailsView, button_data_selection=psbt_views.PSBTChangeDetailsView.NEXT),
-            FlowStep(psbt_views.PSBTFinalizeView, button_data_selection=psbt_views.PSBTFinalizeView.APPROVE_PSBT),
-            FlowStep(psbt_views.PSBTSignedQRDisplayView),
-            FlowStep(MainMenuView)
-        ])
-
-        # Run the same PSBT flow again, this time selecting the seed that the
-        # previous flow left loaded in memory.
-        self.run_sequence([
-            FlowStep(MainMenuView, button_data_selection=MainMenuView.SCAN),
-            FlowStep(scan_views.ScanView, before_run=load_psbt_into_decoder),
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView),
-        ])
-
-        # Selecting the existing seed should have set it as the signing seed
-        assert self.controller.psbt_seed is self.controller.storage.seeds[0]
-
-
-    def test_tampered_input_amounts_routes_to_input_verification_failed(self):
-        """
-            A psbt whose non_witness_utxo doesn't verify can declare any input amounts it
-            likes, which means it can display any fee it likes. It should be discarded
-            outright with no option to proceed.
-        """
-        def load_tampered_psbt_into_decoder(view: scan_views.ScanView):
-            # Editing the non_witness_utxo changes the txid it hashes to, so it no longer
-            # matches the txid the input claims to spend.
-            psbt = PSBT.parse(a2b_base64(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_2_INPUTS))
-            psbt.inputs[0].non_witness_utxo.vout[0].value += 100_000
-            view.decoder.add_data(str(psbt))
-
-        def load_seed_into_decoder(view: scan_views.ScanView):
-            view.decoder.add_data("080115060387063104071857067618681125136207731354")
-
-        self.run_sequence([
-            FlowStep(MainMenuView, button_data_selection=MainMenuView.SCAN),
-            FlowStep(scan_views.ScanView, before_run=load_tampered_psbt_into_decoder),
-            FlowStep(psbt_views.PSBTSelectSeedView, button_data_selection=psbt_views.PSBTSelectSeedView.SCAN_SEED),
-            FlowStep(scan_views.ScanSeedQRView, before_run=load_seed_into_decoder),
-            FlowStep(seed_views.SeedFinalizeView, button_data_selection=seed_views.SeedFinalizeView.FINALIZE),
-            FlowStep(seed_views.SeedOptionsView, is_redirect=True),
-
-            # Parsing fails, so the overview never renders; it redirects straight to the warning
-            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
-            FlowStep(psbt_views.PSBTInputAmountVerificationFailedView),
-            FlowStep(MainMenuView),
-        ])
-
-
-    def test_scan_psbt_first_then_load_electrum_seed(self):
-        """
-            Should be able to load an Electrum mnemonic after first loading in a psbt.
-        """
-        def load_psbt_into_decoder(view: scan_views.ScanView):
-            # Single sig psbt for the below Electrum mnemonic
-            view.decoder.add_data("cHNidP8BAHECAAAAAX9/d6VyI7nvVTyhLBfqu05za2AJ2Z0dKMC0cUX+S2U7AQAAAAD9////AgeHAAAAAAAAFgAUOnNPuZMD1sQudt3+7LvHBUvGhyd//gAAAAAAABYAFGO9QLvu4V9/hz6ZjbIGMrqsEiIYAjQTAAABAR+ghgEAAAAAABYAFKawrgcT62jmIVQwyHPCV0thmJWbAQDBAQAAAAABAYeHL9UQlz/jEKUuNNY3LTeQRjudjBinsP2L0ppvgRt0AAAAAAD/////AnbP3rsPAAAAIlEgtgmCioGjfKwp6f8rOoI4OPb+ZV8db581J9IizZPskl2ghgEAAAAAABYAFKawrgcT62jmIVQwyHPCV0thmJWbAUDCBlMh9VjZN2NdU9Wabi0o3Ct1q9YHTsJRLAkLfUuIHB+BE+ucR4bdGAJG5nBhCWOmCXbpRwKP1INRYvkuQ2fHAAAAACIGA2+PEYHyVy6nhYwAx5SJKBIWXjsWgjhhf/2FEWqXgxnoEKNOC3gAAACAAAAAAAAAAAAAACICA0SBeeHxfHdny6rUnQJuteAnQ7shSydexjJCkSJarn3mEKNOC3gAAACAAQAAAAEAAAAA")
-
-        self.settings.set_value(SettingsConstants.SETTING__ELECTRUM_SEEDS, SettingsConstants.OPTION__ENABLED)
-
-        sequence = [
-            FlowStep(MainMenuView, button_data_selection=MainMenuView.SCAN),
-            FlowStep(scan_views.ScanView, before_run=load_psbt_into_decoder),  # simulate read PSBT; ret val is ignored
-            FlowStep(psbt_views.PSBTSelectSeedView, button_data_selection=psbt_views.PSBTSelectSeedView.TYPE_ELECTRUM),
-            FlowStep(seed_views.SeedElectrumMnemonicStartView),
-        ]
-
-        # Load the associated Electrum mnemonic during the flow
-        for word in "apple drip silly junior language resource unaware whale snake copy gravity tank".split():
-            sequence += [
-                FlowStep(seed_views.SeedMnemonicEntryView, screen_return_value=word),
-            ]
-
-        sequence += [
-            FlowStep(seed_views.SeedFinalizeView, button_data_selection=seed_views.SeedFinalizeView.FINALIZE),
-            FlowStep(seed_views.SeedOptionsView, is_redirect=True),
-            FlowStep(psbt_views.PSBTOverviewView),
-            FlowStep(psbt_views.PSBTMathView),
-        ]
-
-        self.run_sequence(sequence)
-
-
-    def test_scan_multisig_psbt_seed_already_signed_flow(self):
-        
-        def load_psbt_into_decoder(view: scan_views.ScanView):
-            view.decoder.add_data("cHNidP8BAIkCAAAAAc9dCSh2RcRPfHaT5bNVBpbg0jAekRLqOK+bpN/QA0jeAAAAAAD9////AtAHAAAAAAAAIlEg24shYsV3IRCzlgmMKjAsR4Ad9tX896z7zDAi5q0TU9H3CgAAAAAAACIAIByGQg/VP2aRID62ty40E64HYZeRRsKRGLt8J/76R6stQ04FAE8BBDWHzwSLLGdzgAAAAq3q6nR20JnHR+vKrBQdWxN9C7xU8zNX942mVF7AQpl2ArrdLwVlkGxaatQJ4wwkvypNBKbwOq9hXGLNlKi7rZWAFDUxzXUwAACAAQAAgAAAAIACAACATwEENYfPBHOCZmWAAAACmH6KTXIny0vueRgQFBq4M6oMuG8f1QM0I/RzKQ03bCgCHrF0fyUtV0+FD2N34u/woqb8MAt/o+7Ed58RddhY8zYUCUjSaDAAAIABAACAAAAAgAIAAIAAAQEriBMAAAAAAAAiACBY4WsjDgJXLj3VW222jU1tkIIhT26ce/2efH73BWGGBiICAqyfkrdUO662QBrdvJcSOZMFxniD7M1awm9U0Kb5XCm5RzBEAiAPkQTY84YjFFkpD6MI2cc5rJySqws5fsTQA/8XEZFpbAIgTNVykbEH4Z7bqyzhhy6lty0K8rtCUDCaHNv+47NNIWgBAQMEAQAAAAEFR1IhApL4XO+VE1pPYn5wnRFyJQKVSc9TX2dO6KIBH6jwvgPaIQKsn5K3VDuutkAa3byXEjmTBcZ4g+zNWsJvVNCm+VwpuVKuIgYCkvhc75UTWk9ifnCdEXIlApVJz1NfZ07oogEfqPC+A9ocNTHNdTAAAIABAACAAAAAgAIAAIAAAAAAAAAAACIGAqyfkrdUO662QBrdvJcSOZMFxniD7M1awm9U0Kb5XCm5HAlI0mgwAACAAQAAgAAAAIACAACAAAAAAAAAAAAAAAEBR1IhApYXaczuYbBM/A+EH639Ir2yIB4PxL46dK/I1V1O9aHgIQLa02HCI/+EP+9gGpxHskjYWFN5hZzXY7RRvwV4UF42ylKuIgIClhdpzO5hsEz8D4Qfrf0ivbIgHg/Evjp0r8jVXU71oeAcNTHNdTAAAIABAACAAAAAgAIAAIABAAAAAAAAACICAtrTYcIj/4Q/72AanEeySNhYU3mFnNdjtFG/BXhQXjbKHAlI0mgwAACAAQAAgAAAAIACAACAAQAAAAAAAAAA")
-        
-        def load_seed_into_decoder(view: scan_views.ScanView):
-            view.decoder.add_data("073318950739065415961602009907670428187212261116")
-            
-        self.run_sequence([
-            FlowStep(MainMenuView, button_data_selection=MainMenuView.SCAN),
-            FlowStep(scan_views.ScanView, before_run=load_psbt_into_decoder),  # simulate read PSBT; ret val is ignored
-            FlowStep(psbt_views.PSBTSelectSeedView, button_data_selection=psbt_views.PSBTSelectSeedView.SCAN_SEED),
-            FlowStep(scan_views.ScanSeedQRView, before_run=load_seed_into_decoder),
-            FlowStep(seed_views.SeedFinalizeView, button_data_selection=seed_views.SeedFinalizeView.FINALIZE),
-            FlowStep(seed_views.SeedOptionsView, is_redirect=True),
-            FlowStep(psbt_views.PSBTOverviewView),
-            FlowStep(psbt_views.PSBTMathView),
-            FlowStep(psbt_views.PSBTAddressDetailsView, button_data_selection=0),
-            FlowStep(psbt_views.PSBTChangeDetailsView, button_data_selection=psbt_views.PSBTChangeDetailsView.SKIP_VERIFICATION),
-            FlowStep(psbt_views.PSBTFinalizeView, button_data_selection=psbt_views.PSBTFinalizeView.APPROVE_PSBT),
-            FlowStep(psbt_views.PSBTSigningErrorView, button_data_selection=psbt_views.PSBTSigningErrorView.SELECT_DIFF_SEED),
-            FlowStep(psbt_views.PSBTSelectSeedView, button_data_selection=psbt_views.PSBTSelectSeedView.SCAN_SEED),
-            FlowStep(scan_views.ScanSeedQRView, before_run=load_seed_into_decoder),
-            FlowStep(seed_views.SeedFinalizeView, button_data_selection=seed_views.SeedFinalizeView.PASSPHRASE),
-            FlowStep(seed_views.SeedAddPassphraseView, screen_return_value=dict(passphrase="abc")),
-            FlowStep(seed_views.SeedReviewPassphraseView, button_data_selection=seed_views.SeedReviewPassphraseView.DONE),
-            FlowStep(seed_views.SeedOptionsView, is_redirect=True),
-            FlowStep(psbt_views.PSBTOverviewView),
-            FlowStep(psbt_views.PSBTMathView),
-            FlowStep(psbt_views.PSBTAddressDetailsView, button_data_selection=0),
-            FlowStep(psbt_views.PSBTChangeDetailsView, button_data_selection=psbt_views.PSBTChangeDetailsView.SKIP_VERIFICATION),
-            FlowStep(psbt_views.PSBTFinalizeView, button_data_selection=psbt_views.PSBTFinalizeView.APPROVE_PSBT),
-            FlowStep(psbt_views.PSBTSignedQRDisplayView),
-            FlowStep(MainMenuView),
-        ])
-
-
-    def test_parse_and_display_op_return_content(self):
-        """
-            PSBTs that include an OP_RETURN should be able to be parsed like any other
-            PSBT and route to the dedicated OP_RETURN View to display the content
-        """
-        def load_psbt_into_decoder(view: scan_views.ScanView):
-            """
-                PSBT Tx and Wallet Details
-                - Single Sig Wallet P2WPKH (Native Segwit) with no passphrase
-                - Regtest 0fb882ff m/84'/1'/0' tpubDCfk37PqcQx6nFtFVuYHvRLJHxvYj33NjHkKRyRmWyCjyJ64sYBXyVjsTHaLBp5GLhM91VBgJ8nKDWDu52J2xVRy64c7ybEjjyWQJuQGLcg
-                - 1 Input
-                    - 99,992,460 sats
-                - 2 Outputs
-                    - 1 Output back to self (bcrt1qvwkhakqhz7m7kmz6332avatsmdy32m644g86vv) of 99,992,296 sats
-                    - 1 OP_RETURN: "Chancellor on the brink of third bailout"
-                - Fee 164 sats
-            """
-            view.decoder.add_data("cHNidP8BAIYCAAAAATpQ10o+gKdZ8ThpKsbfHiHYn3NhvUrQ5DvW0ZWX8jKLAAAAAAD9////AujC9QUAAAAAFgAUY61+2BcXt+tsWoxV1nVw20kVb1UAAAAAAAAAACtqTChDaGFuY2VsbG9yIG9uIHRoZSBicmluayBvZiB0aGlyZCBiYWlsb3V0aQAAAE8BBDWHzwNXmUmVgAAAANRFa7R5gYD84Wbha3d1QnjgfYPOBw87on6cXS32WoyqAsPFtPxB7PRTdbujUnBPUVDh9YUBtwrl4nc0OcRNGvIyEA+4gv9UAACAAQAAgAAAAIAAAQB0AgAAAAGNFK/1X0fP5q+nu5XX7Tk2VRa0EL+jkGI9CHiJvsjZCgAAAAAA/f///wKMw/UFAAAAABYAFIpZMNnUU6cQt8Q0YpZ0pnvsSA5fAAAAAAAAAAAZakwWYml0Y29pbiBpcyBmcmVlIHNwZWVjaGgAAAABAR+Mw/UFAAAAABYAFIpZMNnUU6cQt8Q0YpZ0pnvsSA5fAQMEAQAAACIGAvxDI0eNI1oQ2AU69R7A0jf+hUdilWCgrWHgdzkqlaXMGA+4gv9UAACAAQAAgAAAAIAAAAAAAQAAAAAiAgK9qKtzGWyiRrpmupdA99NVLriz3GQy6cENbyD19sfl/hgPuIL/VAAAgAEAAIAAAACAAAAAAAIAAAAAAA==")
-
-        def load_seed_into_decoder(view: scan_views.ScanView):
-            view.decoder.add_data("114006021552133507590698063102151531110102551496")
-
-        self.run_sequence([
-            FlowStep(MainMenuView, button_data_selection=MainMenuView.SCAN),
-            FlowStep(scan_views.ScanView, before_run=load_psbt_into_decoder),  # simulate read PSBT; ret val is ignored
-            FlowStep(psbt_views.PSBTSelectSeedView, button_data_selection=psbt_views.PSBTSelectSeedView.SCAN_SEED),
-            FlowStep(scan_views.ScanSeedQRView, before_run=load_seed_into_decoder),
-            FlowStep(seed_views.SeedFinalizeView, button_data_selection=seed_views.SeedFinalizeView.FINALIZE),
-            FlowStep(seed_views.SeedOptionsView, is_redirect=True),
-            FlowStep(psbt_views.PSBTOverviewView),
-            FlowStep(psbt_views.PSBTMathView),
-            FlowStep(psbt_views.PSBTChangeDetailsView, button_data_selection=psbt_views.PSBTChangeDetailsView.NEXT),
-
-            # Should route to display OP_RETURN content
-            FlowStep(psbt_views.PSBTOpReturnView, button_data_selection=0),
-
-            # Should be able to sign the psbt
-            FlowStep(psbt_views.PSBTFinalizeView, button_data_selection=psbt_views.PSBTFinalizeView.APPROVE_PSBT),
-            FlowStep(psbt_views.PSBTSignedQRDisplayView),
-            FlowStep(MainMenuView)
-        ])
-
-
-
-class PSBTSigningFlowTest(FlowTest):
-    """
-    Shared helpers for flow tests that load a psbt and walk through the signing flow.
-    """
-    def _load_psbt_for_signing(self, psbt: PSBT, seed: Seed = None):
-        """
-        Stage the psbt in the Controller and load the signing seed into storage, as if
-        both had just been scanned. Each test's sequence then starts at seed selection;
-        the parse itself runs when PSBTOverviewView is instantiated.
-        """
-        self.settings.set_value(SettingsConstants.SETTING__NETWORK, SettingsConstants.REGTEST)
-        self.controller.psbt = psbt
-        self.controller.storage.set_pending_seed(seed if seed is not None else PSBTTestData.seed)
-        self.controller.storage.finalize_pending_seed()
-
-
-    def _psbt_with_change(self):
-        psbt = PSBT.parse(a2b_base64(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_1_INPUT))
-        psbt.outputs.append(create_output(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_CHANGE, 10_000))
-        return psbt
-
-
-
-class TestPSBTOwnershipClaimRouting(PSBTSigningFlowTest):
-    """
-    A psbt whose own description of itself does not hold up, whose arithmetic is
-    impossible, or whose change pays our key at a path the user's coordinator software is
-    unlikely to check is refused during parsing, before the user is shown anything about
-    the transaction. These cover what the user meets when that happens: a warning screen
-    that ends the flow, not a crash.
-    """
-
-    def test_forged_output_claim_terminates_signing_flow(self):
-        """
-        A forged ownership claim on an output is framed as a potential attack, so it
-        routes to a warning that aborts the signing flow.
-        """
-        psbt = self._psbt_with_change()
-        claim_seed_owns_key(psbt.outputs[0], "m/84h/1h/0h/1/0", foreign_public_key())
-        self._load_psbt_for_signing(psbt)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
-            FlowStep(psbt_views.PSBTOutputOwnershipClaimFailedView, button_data_selection=psbt_views.PSBTOutputOwnershipClaimFailedView.DISCARD),
-            FlowStep(MainMenuView),
-        ])
-
-
-    def test_forged_input_claim_terminates_signing_flow(self):
-        """
-        A false claim on an input is framed as inconsistent data rather than as an attack,
-        but also routes to its own information screen that aborts the signing flow.
-        """
-        psbt = self._psbt_with_change()
-        claim_seed_owns_key(psbt.inputs[0], "m/84h/1h/0h/0/0", foreign_public_key())
-        self._load_psbt_for_signing(psbt)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
-            FlowStep(psbt_views.PSBTInputOwnershipClaimFailedView, button_data_selection=psbt_views.PSBTInputOwnershipClaimFailedView.DISCARD),
-            FlowStep(MainMenuView),
-        ])
-
-
-    def test_surplus_derivation_paths_terminate_signing_flow(self):
-        """
-        When an output names more derivation paths than its script can use, nothing in
-        the psbt says which key it actually pays, so parsing refuses it.
-
-        The parser tests cover why that shape is refusable. This one covers what the user
-        gets: a warning that ends the flow, rather than a crash, and without first being
-        walked through the details of a transaction about to be discarded.
-        """
-        other_root = root_for_seed(PSBTTestData.recipient_seed)
-
-        psbt = PSBT.parse(a2b_base64(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_2_INPUTS))
-
-        # Output 2 pays a stranger and carries no derivation path entries of its own.
-        # Give it two, so nothing in the psbt says which key it pays.
-        for i in range(2):
-            derivation_path = bip32.parse_path(f"m/84h/1h/0h/0/{i}")
-            psbt.outputs[2].bip32_derivations[other_root.derive(derivation_path).get_public_key()] = \
-                DerivationPath(other_root.my_fingerprint, derivation_path)
-
-        self._load_psbt_for_signing(psbt, seed=PSBTTestData.two_input_seed)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
-            FlowStep(psbt_views.PSBTSurplusDerivationPathsView, button_data_selection=psbt_views.PSBTSurplusDerivationPathsView.DISCARD),
-            FlowStep(MainMenuView),
-        ])
-
-
-    def test_output_ownership_contradiction_terminates_signing_flow(self):
-        """
-        When a psbt marks an output as paying us while its script pays a stranger, the
-        two cannot both be true, so parsing refuses it.
-
-        The parser tests cover which shapes qualify. This one covers what the user gets:
-        a warning that ends the flow, before any transaction detail is rendered.
-        """
-        psbt = PSBT.parse(a2b_base64(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_2_INPUTS))
-
-        # Output 0 is the wallet's own change. Repoint its script at a stranger but leave
-        # its derivation path entry in place, so the psbt still names a key this seed
-        # owns on an output that no longer pays it. Note that psbt.tx is rebuilt on every
-        # access, so the scriptPubKey has to be set on the output scope itself.
-        psbt.outputs[0].script_pubkey = script.p2wpkh(foreign_public_key())
-
-        self._load_psbt_for_signing(psbt, seed=PSBTTestData.two_input_seed)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
-            FlowStep(psbt_views.PSBTOutputOwnershipContradictionView, button_data_selection=psbt_views.PSBTOutputOwnershipContradictionView.DISCARD),
-            FlowStep(MainMenuView),
-        ])
-
-
-    def test_mixed_derivation_path_types_terminate_signing_flow(self):
-        """
-        An input or output filling both derivation path maps at once is refused on that
-        shape alone. The check lives in the ownership scan, which runs over inputs as well
-        as outputs, so this one plants the shape on an input, the side the parser tests do
-        not cover.
-
-        It ends the flow at its own warning before any transaction detail is rendered.
-        """
-        other_root = root_for_seed(PSBTTestData.recipient_seed)
-
-        psbt = PSBT.parse(a2b_base64(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_2_INPUTS))
-
-        # Input 0 already carries a segwit-v0 entry. Add a taproot one beside it, on a
-        # stranger's key so nothing here claims this seed: the refusal is on the shape
-        # alone, not on an ownership claim.
-        derivation_path = bip32.parse_path("m/86h/1h/0h/0/0")
-        psbt.inputs[0].taproot_bip32_derivations[foreign_public_key()] = (
-            [], DerivationPath(other_root.my_fingerprint, derivation_path))
-
-        self._load_psbt_for_signing(psbt, seed=PSBTTestData.two_input_seed)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
-            FlowStep(psbt_views.PSBTMixedDerivationPathTypesView, button_data_selection=psbt_views.PSBTMixedDerivationPathTypesView.DISCARD),
-            FlowStep(MainMenuView),
-        ])
-
-
-    def test_missing_input_utxo_terminates_signing_flow(self):
-        """
-        An input that carries no utxo data gives us no amount to verify, so parsing
-        refuses the psbt.
-
-        It ends the flow at its own warning before any transaction detail is rendered.
-        """
-        psbt = PSBT.parse(a2b_base64(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_2_INPUTS))
-
-        # Input 0 is left intact, so the seed can still sign and the parse gets as far as
-        # the amount check.
-        psbt.inputs[1].witness_utxo = None
-        psbt.inputs[1].non_witness_utxo = None
-
-        self._load_psbt_for_signing(psbt, seed=PSBTTestData.two_input_seed)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
-            FlowStep(psbt_views.PSBTMissingInputUtxoView, button_data_selection=psbt_views.PSBTMissingInputUtxoView.DISCARD),
-            FlowStep(MainMenuView),
-        ])
-
-
-    def test_malformed_op_return_terminates_signing_flow(self):
-        """
-        An OP_RETURN push that claims more bytes than its script carries is malformed
-        rather than hostile, but it is still refused during the parse and routes to a
-        warning that aborts the signing flow.
-        """
-        psbt = self._psbt_with_change()
-        truncated_push = script.Script(bytes([OPCODES.OP_RETURN, 10]) + b"abc")
-        psbt.outputs.append(create_op_return_output(b"", script_pubkey=truncated_push))
-        self._load_psbt_for_signing(psbt)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
-            FlowStep(psbt_views.PSBTMalformedOpReturnView, button_data_selection=psbt_views.PSBTMalformedOpReturnView.DISCARD),
-            FlowStep(MainMenuView),
-        ])
-
-
-    def test_master_key_claim_terminates_signing_flow(self):
-        """
-        The psbt claims this seed on an output at a derivation path with no levels, which
-        is the seed's master key. That key is a derivation root rather than one any wallet
-        receives at. No standard wallet writes an entry at that path.
-
-        It ends the flow at its own warning before any transaction detail is rendered.
-        """
-        psbt = self._psbt_with_change()
-        claim_seed_owns_key(psbt.outputs[0], "m", root_for_seed(PSBTTestData.seed).get_public_key())
-
-        self._load_psbt_for_signing(psbt)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
-            FlowStep(psbt_views.PSBTUnsupportedDerivationPathView, button_data_selection=psbt_views.PSBTUnsupportedDerivationPathView.DISCARD),
-            FlowStep(MainMenuView),
-        ])
-
-
-    def test_missing_input_script_terminates_signing_flow(self):
-        """
-        The psbt leaves out the witness script that a p2wsh input commits to.
-
-        The flow should stop at PSBTMissingInputScriptView, before any transaction detail
-        is rendered.
-        """
-        psbt = PSBT.parse(a2b_base64(PSBTTestData.MULTISIG_NATIVE_SEGWIT_1_INPUT))
-        psbt.outputs.append(create_output(PSBTTestData.MULTISIG_NATIVE_SEGWIT_CHANGE, 10_000))
-        psbt.inputs[0].witness_script = None
-
-        self._load_psbt_for_signing(psbt)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
-            FlowStep(psbt_views.PSBTMissingInputScriptView, button_data_selection=psbt_views.PSBTMissingInputScriptView.DISCARD),
-            FlowStep(MainMenuView),
-        ])
-
-
-    def test_input_script_mismatch_terminates_signing_flow(self):
-        """
-        The psbt replaces a p2wsh input's witness script with a stranger's. The coin
-        really is the user's, but the supplied script hashes to something other than what
-        the input's scriptPubKey commits to.
-
-        The flow should stop at PSBTInputScriptMismatchView, before any transaction detail
-        is rendered.
-        """
-        psbt = PSBT.parse(a2b_base64(PSBTTestData.MULTISIG_NATIVE_SEGWIT_1_INPUT))
-        psbt.outputs.append(create_output(PSBTTestData.MULTISIG_NATIVE_SEGWIT_CHANGE, 10_000))
-        foreign_multisig_keys = [foreign_public_key(f"m/48h/1h/0h/2h/0/{i}") for i in range(3)]
-        psbt.inputs[0].witness_script = script.multisig(2, foreign_multisig_keys)
-
-        self._load_psbt_for_signing(psbt)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
-            FlowStep(psbt_views.PSBTInputScriptMismatchView, button_data_selection=psbt_views.PSBTInputScriptMismatchView.DISCARD),
-            FlowStep(MainMenuView),
-        ])
-
-
-    def test_extraneous_input_script_terminates_signing_flow(self):
-        """
-        The psbt adds a witness script to a legacy multisig input, in addition to the
-        input's own redeem script. The coin really is the user's and the redeem script
-        still hashes to the scriptPubKey, but a legacy p2sh multisig input should never
-        have a witness script.
-
-        The flow should stop at PSBTExtraneousInputScriptView, before any transaction
-        detail is rendered.
-        """
-        psbt = PSBT.parse(a2b_base64(PSBTTestData.MULTISIG_LEGACY_P2SH_1_INPUT))
-        psbt.outputs.append(create_output(PSBTTestData.MULTISIG_LEGACY_P2SH_CHANGE, 10_000))
-
-        # The extraneous script's content is irrelevant, so an arbitrary script will do
-        psbt.inputs[0].witness_script = script.Script(b"\x51")  # OP_TRUE
-
-        self._load_psbt_for_signing(psbt)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
-            FlowStep(psbt_views.PSBTExtraneousInputScriptView, button_data_selection=psbt_views.PSBTExtraneousInputScriptView.DISCARD),
-            FlowStep(MainMenuView),
-        ])
-
-
-    def test_input_ownership_contradiction_terminates_signing_flow(self):
-        """
-        The psbt claims that our input is also controlled by our key at a second
-        derivation path. The input's script uses a different key, so the claim is false.
-        That is framed as an attack.
-
-        The flow should stop at PSBTInputOwnershipContradictionView, before any
-        transaction detail is rendered.
-        """
-        decoy_derivation_path = "m/84h/1h/0h/0/9"
-        decoy_public_key = root_for_seed(PSBTTestData.seed).derive(decoy_derivation_path).get_public_key()
-
-        psbt = self._psbt_with_change()
-        claim_seed_owns_key(psbt.inputs[0], decoy_derivation_path, decoy_public_key)
-
-        self._load_psbt_for_signing(psbt)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
-            FlowStep(psbt_views.PSBTInputOwnershipContradictionView, button_data_selection=psbt_views.PSBTInputOwnershipContradictionView.DISCARD),
-            FlowStep(MainMenuView),
-        ])
-
-
-    def test_unsupported_script_path_terminates_signing_flow(self):
-        """
-        The psbt's only input has our key in its taproot script tree's one leaf, behind
-        an unspendable internal key. This seed can sign it only through a script path
-        spend, which is not yet supported.
-
-        The flow should stop at PSBTUnsupportedScriptPathView, before any transaction
-        detail is rendered.
-        """
-        leaf_derivation_path = "m/86h/1h/0h/0/0"
-        leaf_public_key = root_for_seed(PSBTTestData.seed).derive(leaf_derivation_path).get_public_key()
-        merkle_root = tapleaf_hash(leaf_public_key)
-
-        psbt = PSBT.parse(a2b_base64(PSBTTestData.SINGLE_SIG_TAPROOT_1_INPUT))
-        psbt.outputs.append(create_output(PSBTTestData.SINGLE_SIG_TAPROOT_CHANGE, 10_000))
-
-        inp = psbt.inputs[0]
-        set_input_locking_script(inp, p2tr_with_script_tree(NUMS_INTERNAL_KEY, merkle_root))
-        inp.taproot_merkle_root = merkle_root
-        inp.taproot_bip32_derivations.clear()
-        claim_seed_owns_key(inp, leaf_derivation_path, leaf_public_key, is_taproot=True, leaf_hashes=[merkle_root])
-
-        self._load_psbt_for_signing(psbt)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
-            FlowStep(psbt_views.PSBTUnsupportedScriptPathView, button_data_selection=psbt_views.PSBTUnsupportedScriptPathView.DISCARD),
-            FlowStep(MainMenuView),
-        ])
-
-
-    def test_unexpected_change_derivation_path_terminates_signing_flow(self):
-        """
-        The psbt pays change to our key on a branch that no coordinator software scans.
-        The coins stay the user's, but their coordinator software will never look there to
-        find them, so this is framed as an attack.
-
-        The flow should stop at PSBTUnexpectedChangeDerivationPathView, before any
-        transaction detail is rendered.
-        """
-        psbt = self._psbt_with_change()
-        repoint_change(psbt, "m/84h/1h/0h/2/0")
-
-        self._load_psbt_for_signing(psbt)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
-            FlowStep(psbt_views.PSBTUnexpectedChangeDerivationPathView, button_data_selection=psbt_views.PSBTUnexpectedChangeDerivationPathView.DISCARD),
-            FlowStep(MainMenuView),
-        ])
-
-
-    def test_mixed_base_paths_terminate_signing_flow(self):
-        """
-        A single sig segwit v0 psbt spends utxos from two of the seed's accounts. The
-        added input only has a witness_utxo, so it can't be verified as genuine.
-
-        The flow should stop at PSBTUnverifiableMixedInputBasePathsView, before any
-        transaction detail is rendered.
-        """
-        psbt = self._psbt_with_change()
-
-        # One more of our utxos, from another account
-        second_account_derivation_path = "m/84h/1h/7h/0/2"
-        public_key = root_for_seed(PSBTTestData.seed).derive(second_account_derivation_path).get_public_key()
-        second_input = deepcopy(psbt.inputs[0])
-        second_input.bip32_derivations.clear()
-        set_input_locking_script(second_input, script.p2wpkh(public_key))
-        claim_seed_owns_key(second_input, second_account_derivation_path, public_key)
-        psbt.inputs.append(second_input)
-
-        self._load_psbt_for_signing(psbt)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
-            FlowStep(psbt_views.PSBTUnverifiableMixedInputBasePathsView, button_data_selection=psbt_views.PSBTUnverifiableMixedInputBasePathsView.DISCARD),
-            FlowStep(MainMenuView),
-        ])
-
-
-    def test_wrong_seed_routes_back_to_seed_selection_flow(self):
-        """
-        The wrong seed for a psbt redirects before any transaction detail is rendered and
-        routes back to seed selection with the signing seed cleared so another can be
-        picked.
-        """
-        self._load_psbt_for_signing(self._psbt_with_change(), seed=PSBTTestData.recipient_seed)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
-            FlowStep(psbt_views.PSBTSeedCannotSignView, button_data_selection=psbt_views.PSBTSeedCannotSignView.SELECT_DIFFERENT_SEED),
-            FlowStep(psbt_views.PSBTSelectSeedView),
-        ])
-
-        assert self.controller.psbt_seed is None
-        assert self.controller.psbt_parser is None
-
-        # The psbt itself is kept: the user is choosing a different seed for it, not
-        # starting over
-        assert self.controller.psbt is not None
-
-
-    def test_negative_fee_terminates_signing_flow(self):
-        """
-        A psbt whose outputs spend more than its inputs bring in is malformed rather than
-        hostile, but it is still rejected during the parse and routes to a warning that
-        aborts the signing flow.
-        """
-        psbt = self._psbt_with_change()
-        psbt.outputs[0].value = sum(inp.utxo.value for inp in psbt.inputs) + 1
-        self._load_psbt_for_signing(psbt)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
-            FlowStep(psbt_views.PSBTNegativeFeeView, button_data_selection=psbt_views.PSBTNegativeFeeView.DISCARD),
-            FlowStep(MainMenuView),
-        ])
-
-
-
-class TestPSBTWarningRouting(PSBTSigningFlowTest):
-    """
-    Some findings are worth a warning but leave the decision to the user. Each applicable
-    warning is shown in turn before the transaction details. The user can then continue
-    to sign. These cover each warning alone and in the sequences that can occur together.
-    """
-
-    def test_distant_change_index_warns_but_allows_signing(self):
-        """
-        The psbt pays change at an address index far past the one this transaction spends
-        from.
-
-        Unlike a change path refusal, the flow should show the distant address warning and
-        then let the user carry on to sign, with the transaction detail screens shown as
-        usual. The change details screen should be told the address index is distant.
-        """
-        psbt = self._psbt_with_change()
-
-        # The lone input's key is at index 3, so this is well past the window
-        repoint_change(psbt, "m/84h/1h/0h/1/20000")
-
-        self._load_psbt_for_signing(psbt)
-
-        change_details_screen_kwargs = {}
-
-        def capture_change_details_screen(view: psbt_views.PSBTChangeDetailsView):
-            """
-            Record what the change details View hands its Screen. run_sequence has already
-            mocked View.run_screen, so this wrapper records the arguments and then calls
-            that mock, leaving the sequence's own bookkeeping intact.
-            """
-            def wrapper(ScreenClass, **kwargs):
-                change_details_screen_kwargs.update(kwargs)
-                return View.run_screen(view, ScreenClass, **kwargs)
-            view.run_screen = wrapper
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView),
-            FlowStep(psbt_views.PSBTWarningView, button_data_selection=psbt_views.PSBTWarningView.CONTINUE),
-            FlowStep(psbt_views.PSBTWarningView, is_redirect=True),
-            FlowStep(psbt_views.PSBTMathView),
-            FlowStep(psbt_views.PSBTChangeDetailsView, before_run=capture_change_details_screen, button_data_selection=psbt_views.PSBTChangeDetailsView.NEXT),
-            FlowStep(psbt_views.PSBTFinalizeView, button_data_selection=psbt_views.PSBTFinalizeView.APPROVE_PSBT),
-            FlowStep(psbt_views.PSBTSignedQRDisplayView),
-        ])
-
-        # The output the warning was about is the one the parse flagged
-        assert self.controller.psbt_parser.warnings == [PSBTParser.WARNING__CHANGE_ADDRESS_INDEX_BEYOND_WINDOW]
-        assert self.controller.psbt_parser.change_data[0]["address_index_beyond_window"] is True
-
-        # The View passes that flag on to the change details screen
-        assert change_details_screen_kwargs["is_address_index_beyond_window"] is True
-
-
-    def test_high_fee_warning_continues_to_the_distant_change_index_warning(self):
-        """
-        The psbt pays a 50,000 sat recipient out of a 1 BTC input, so nearly all of the
-        input goes to the fee. Its change output also pays a key at an address index far
-        past the input's.
-
-        The user should see the high fee warning, then the distant change index warning,
-        and then the transaction details.
-        """
-        psbt = self._psbt_with_change()
-
-        # The lone input's key is at index 3, so this is well past the window
-        repoint_change(psbt, "m/84h/1h/0h/1/20000")
-        psbt.outputs.append(create_output(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_RECEIVE, 50_000))
-
-        self._load_psbt_for_signing(psbt)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView),
-            FlowStep(psbt_views.PSBTWarningView, button_data_selection=psbt_views.PSBTWarningView.CONTINUE),
-            FlowStep(psbt_views.PSBTWarningView, button_data_selection=psbt_views.PSBTWarningView.CONTINUE),
-            FlowStep(psbt_views.PSBTWarningView, is_redirect=True),
-            FlowStep(psbt_views.PSBTMathView),
-        ])
-
-        assert self.controller.psbt_parser.warnings == [
-            PSBTParser.WARNING__HIGH_FEE,
-            PSBTParser.WARNING__CHANGE_ADDRESS_INDEX_BEYOND_WINDOW,
-        ]
-
-
-    def test_high_fee_warning_alone_continues_to_the_transaction_details(self):
-        """
-        The psbt pays a 50,000 sat recipient out of a 1 BTC input, with its change at an
-        ordinary address index, so nearly all of the input goes to the fee.
-
-        The user should see the high fee warning and then the transaction details.
-        """
-        psbt = self._psbt_with_change()
-        psbt.outputs.append(create_output(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_RECEIVE, 50_000))
-
-        self._load_psbt_for_signing(psbt)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView),
-            FlowStep(psbt_views.PSBTWarningView, button_data_selection=psbt_views.PSBTWarningView.CONTINUE),
-            FlowStep(psbt_views.PSBTWarningView, is_redirect=True),
-            FlowStep(psbt_views.PSBTMathView),
-        ])
-
-        assert self.controller.psbt_parser.warnings == [PSBTParser.WARNING__HIGH_FEE]
-
-
-    def test_no_change_warning_alone_continues_to_the_transaction_details(self):
-        """
-        The psbt spends its whole 1 BTC input on a single recipient, apart from a 10,000
-        sat fee, so no change comes back.
-
-        The user should see the no change warning and then the transaction details.
-        """
-        psbt = PSBT.parse(a2b_base64(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_1_INPUT))
-        input_amount = psbt.inputs[0].utxo.value
-        psbt.outputs.append(create_output(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_RECEIVE, input_amount - 10_000))
-
-        self._load_psbt_for_signing(psbt)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView),
-            FlowStep(psbt_views.PSBTWarningView, button_data_selection=psbt_views.PSBTWarningView.CONTINUE),
-            FlowStep(psbt_views.PSBTWarningView, is_redirect=True),
-            FlowStep(psbt_views.PSBTMathView),
-        ])
-
-        assert self.controller.psbt_parser.warnings == [PSBTParser.WARNING__NO_CHANGE]
-
-
-    def test_high_fee_warning_continues_to_the_no_change_warning(self):
-        """
-        The psbt pays a single 50,000 sat recipient out of a 1 BTC input and sends no
-        change back, so nearly all of the input goes to the fee.
-
-        The user should see the high fee warning, then the no change warning, and then the
-        transaction details.
-        """
-        psbt = PSBT.parse(a2b_base64(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_1_INPUT))
-        psbt.outputs.append(create_output(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_RECEIVE, 50_000))
-
-        self._load_psbt_for_signing(psbt)
-
-        self.run_sequence([
-            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
-            FlowStep(psbt_views.PSBTOverviewView),
-            FlowStep(psbt_views.PSBTWarningView, button_data_selection=psbt_views.PSBTWarningView.CONTINUE),
-            FlowStep(psbt_views.PSBTWarningView, button_data_selection=psbt_views.PSBTWarningView.CONTINUE),
-            FlowStep(psbt_views.PSBTWarningView, is_redirect=True),
-            FlowStep(psbt_views.PSBTMathView),
-        ])
-
-        assert self.controller.psbt_parser.warnings == [
-            PSBTParser.WARNING__HIGH_FEE,
-            PSBTParser.WARNING__NO_CHANGE,
-        ]
+	def test_scan_psbt_first_then_correct_seedqr_flow(self):
+		"""
+			Selecting "Scan" from the MainMenuView and scanning a PSBT should enter the PSBTSelectSeedView flow
+			when Scan a Seed is selected from PSBTSelectSeedView it should enter the ScanView flow
+			when a SeedQR is scanned it should enter the PSBTOverviewView flow
+			since the PSBT has change no warning is displayed and it should enter the PSBTMathView flow
+			since the PSBT is not a self transfer it should enter the PSBTAddressDetailsView flow
+		"""
+		def load_psbt_into_decoder(view: scan_views.ScanView):
+			"""
+				PSBT Tx and Wallet Details
+				- Single Sig Wallet P2WPKH (Native Segwit) with no passphrase
+				- Regtest c751dc07 m/84'/1'/0' tpubDDZBrnxMxbVzqt8EoEiABPxeKzFWma5pra5UEbg3Wst1hrwr6feuvcy7Sov7cpuYx94ypuy1PQ9NDNoQagFs37wGALzLb5Ei3FvyJWPPPKZ
+				- 2 Inputs
+					- 56,522,834 sats
+					- 1,990,245,069 sats
+				- 4 Outputs
+					- 1 Output to another wallet (bcrt1q7cw0wzy8g6mq5qvkpvhnk5gsps5ncy3srp0n2j) of 123,456 sats
+					- 3 Outputs change
+						- 3 outputs to emulate a fake mix to increase privacy
+						- Change addresses are index 1/7, 1/8, 1/9
+						- 1/7 address bcrt1q53j0xwuskuf5gnvynadh0hlazyy8srydlucrhg with amount 123,456 sats
+						- 1/8 address bcrt1q5gtw3zfp4cx67yk5q42q6j6rfza8aqcwpyyslv with amount 1,990,121,477 sats
+						- 1/9 address bcrt1q9rrg7399m43cn0yg4tz0v0ate89jgf2d6kpz7v with amount 56,399,242 sats
+					- Fee 272 sats
+			"""
+			view.decoder.add_data("cHNidP8BANgCAAAAAsTXZs3fz/dmGb6M80+jjvJZdYya+cw5bT/dGuhZFdSlAAAAAAD9////qo6xg/UZAvUkcbse1F+C9zbP/FeZNjThx7SCIn6eMCgBAAAAAP3///8EQOIBAAAAAAAWABSkZPM7kLcTRE2En1t33/0RCHgMjQXYnnYAAAAAFgAUKMaPRKXdY4m8iKrE9j+rycskJU1A4gEAAAAAABYAFPYc9wiHRrYKAZYLLztREAwpPBIwipVcAwAAAAAWABSiFuiJIa4NrxLUBVQNS0NIun6DDtoRAABPAQQ1h88DBcQGZIAAAAA+0J+jlNL3dpWwlnBi8Dx+Ipg4e6uvB3HdjzFPX7r9CAOOlAIxgII+/xCcj+XoEenKH7wj5s5wlu7Q7CCZWFLGLhA5Su0UVAAAgAEAAIAAAACAAAEA7QIAAAAEE6njX/fnvn7hbkKIRcxzNYFOSfbCdNeWnd7Fe/1UcQ0BAAAAAP3///8TqeNf9+e+fuFuQohFzHM1gU5J9sJ015ad3sV7/VRxDQMAAAAA/f///xOp41/3575+4W5CiEXMczWBTkn2wnTXlp3exXv9VHENBAAAAAD9////E6njX/fnvn7hbkKIRcxzNYFOSfbCdNeWnd7Fe/1UcQ0GAAAAAP3///8CUnheAwAAAAAWABRCfygPJ+Fjsx4BknYvvm3A3qKn2xJ/XQcAAAAAF6kU1I4TAst5nAj15ey7vwe5cM3OFq+HlhEAAAEBH1J4XgMAAAAAFgAUQn8oDyfhY7MeAZJ2L75twN6ip9sBAwQBAAAAIgYCo7sfm78RQY3B5n0ac/QF8VtMAzFnci+h5D1MtpgRY7oYOUrtFFQAAIABAACAAAAAgAEAAAAGAAAAAAEAcQIAAAABxY7wh0nsfJQfzWrD/9rN9BYsM+iOmPaO6I0ANFgO/PcAAAAAAP3///8CptiUAAAAAAAWABRIm4HhQY/TzOjeWSPRrbuJo9MlW826oHYAAAAAFgAU0z+0L2QSLGtyQTn8FhbCpcI7jbliAQAAAQEfzbqgdgAAAAAWABTTP7QvZBIsa3JBOfwWFsKlwjuNuQEDBAEAAAAiBgITHmebEANk81CraV4xZIpqkNjjw0tIvezl1Ism1NRH3Rg5Su0UVAAAgAEAAIAAAACAAQAAAAAAAAAAIgICuTT7WnuiUTpObjWnZFHzIeEvW9PTB+1LLVFNQJVFeIIYOUrtFFQAAIABAACAAAAAgAEAAAAHAAAAACICAk8f3hpc5C35chgSg+Pe2zZ9IhHREd4aKW2+yAMRIFeqGDlK7RRUAACAAQAAgAAAAIABAAAACQAAAAAAIgIDjt1CjvrnMMnjbmTNKUAYoKEDRbmKjNjbq+6Ppqj3bqQYOUrtFFQAAIABAACAAAAAgAEAAAAIAAAAAA==")
+
+		def load_seed_into_decoder(view: scan_views.ScanView):
+			view.decoder.add_data("080115060387063104071857067618681125136207731354")
+	
+		self.run_sequence([
+			FlowStep(MainMenuView, button_data_selection=MainMenuView.SCAN),
+			FlowStep(scan_views.ScanView, before_run=load_psbt_into_decoder),  # simulate read PSBT; ret val is ignored
+			FlowStep(psbt_views.PSBTSelectSeedView, button_data_selection=psbt_views.PSBTSelectSeedView.SCAN_SEED),
+			FlowStep(scan_views.ScanSeedQRView, before_run=load_seed_into_decoder),
+			FlowStep(seed_views.SeedFinalizeView, button_data_selection=seed_views.SeedFinalizeView.FINALIZE),
+			FlowStep(seed_views.SeedOptionsView, is_redirect=True),
+			FlowStep(psbt_views.PSBTOverviewView),
+			FlowStep(psbt_views.PSBTMathView),
+			FlowStep(psbt_views.PSBTAddressDetailsView, button_data_selection=0),
+			FlowStep(psbt_views.PSBTChangeDetailsView, button_data_selection=psbt_views.PSBTChangeDetailsView.NEXT),
+			FlowStep(psbt_views.PSBTChangeDetailsView, button_data_selection=psbt_views.PSBTChangeDetailsView.NEXT),
+			FlowStep(psbt_views.PSBTChangeDetailsView, button_data_selection=psbt_views.PSBTChangeDetailsView.NEXT),
+			FlowStep(psbt_views.PSBTFinalizeView, button_data_selection=psbt_views.PSBTFinalizeView.APPROVE_PSBT),
+			FlowStep(psbt_views.PSBTSignedQRDisplayView),
+			FlowStep(MainMenuView)
+		])
+
+
+	def test_scan_psbt_first_then_load_electrum_seed(self):
+		"""
+			Should be able to load an Electrum mnemonic after first loading in a psbt.
+		"""
+		def load_psbt_into_decoder(view: scan_views.ScanView):
+			# Single sig psbt for the below Electrum mnemonic
+			view.decoder.add_data("cHNidP8BAHECAAAAAX9/d6VyI7nvVTyhLBfqu05za2AJ2Z0dKMC0cUX+S2U7AQAAAAD9////AgeHAAAAAAAAFgAUOnNPuZMD1sQudt3+7LvHBUvGhyd//gAAAAAAABYAFGO9QLvu4V9/hz6ZjbIGMrqsEiIYAjQTAAABAR+ghgEAAAAAABYAFKawrgcT62jmIVQwyHPCV0thmJWbAQDBAQAAAAABAYeHL9UQlz/jEKUuNNY3LTeQRjudjBinsP2L0ppvgRt0AAAAAAD/////AnbP3rsPAAAAIlEgtgmCioGjfKwp6f8rOoI4OPb+ZV8db581J9IizZPskl2ghgEAAAAAABYAFKawrgcT62jmIVQwyHPCV0thmJWbAUDCBlMh9VjZN2NdU9Wabi0o3Ct1q9YHTsJRLAkLfUuIHB+BE+ucR4bdGAJG5nBhCWOmCXbpRwKP1INRYvkuQ2fHAAAAACIGA2+PEYHyVy6nhYwAx5SJKBIWXjsWgjhhf/2FEWqXgxnoEKNOC3gAAACAAAAAAAAAAAAAACICA0SBeeHxfHdny6rUnQJuteAnQ7shSydexjJCkSJarn3mEKNOC3gAAACAAQAAAAEAAAAA")
+
+		self.settings.set_value(SettingsConstants.SETTING__ELECTRUM_SEEDS, SettingsConstants.OPTION__ENABLED)
+
+		sequence = [
+			FlowStep(MainMenuView, button_data_selection=MainMenuView.SCAN),
+			FlowStep(scan_views.ScanView, before_run=load_psbt_into_decoder),  # simulate read PSBT; ret val is ignored
+			FlowStep(psbt_views.PSBTSelectSeedView, button_data_selection=psbt_views.PSBTSelectSeedView.TYPE_ELECTRUM),
+			FlowStep(seed_views.SeedElectrumMnemonicStartView),
+		]
+
+		# Load the associated Electrum mnemonic during the flow
+		for word in "apple drip silly junior language resource unaware whale snake copy gravity tank".split():
+			sequence += [
+				FlowStep(seed_views.SeedMnemonicEntryView, screen_return_value=word),
+			]
+
+		sequence += [
+			FlowStep(seed_views.SeedFinalizeView, button_data_selection=seed_views.SeedFinalizeView.FINALIZE),
+			FlowStep(seed_views.SeedOptionsView, is_redirect=True),
+			FlowStep(psbt_views.PSBTOverviewView),
+			FlowStep(psbt_views.PSBTMathView),
+		]
+
+		self.run_sequence(sequence)
+
+
+	def test_scan_multisig_psbt_seed_already_signed_flow(self):
+		
+		def load_psbt_into_decoder(view: scan_views.ScanView):
+			view.decoder.add_data("cHNidP8BAIkCAAAAAc9dCSh2RcRPfHaT5bNVBpbg0jAekRLqOK+bpN/QA0jeAAAAAAD9////AtAHAAAAAAAAIlEg24shYsV3IRCzlgmMKjAsR4Ad9tX896z7zDAi5q0TU9H3CgAAAAAAACIAIByGQg/VP2aRID62ty40E64HYZeRRsKRGLt8J/76R6stQ04FAE8BBDWHzwSLLGdzgAAAAq3q6nR20JnHR+vKrBQdWxN9C7xU8zNX942mVF7AQpl2ArrdLwVlkGxaatQJ4wwkvypNBKbwOq9hXGLNlKi7rZWAFDUxzXUwAACAAQAAgAAAAIACAACATwEENYfPBHOCZmWAAAACmH6KTXIny0vueRgQFBq4M6oMuG8f1QM0I/RzKQ03bCgCHrF0fyUtV0+FD2N34u/woqb8MAt/o+7Ed58RddhY8zYUCUjSaDAAAIABAACAAAAAgAIAAIAAAQEriBMAAAAAAAAiACBY4WsjDgJXLj3VW222jU1tkIIhT26ce/2efH73BWGGBiICAqyfkrdUO662QBrdvJcSOZMFxniD7M1awm9U0Kb5XCm5RzBEAiAPkQTY84YjFFkpD6MI2cc5rJySqws5fsTQA/8XEZFpbAIgTNVykbEH4Z7bqyzhhy6lty0K8rtCUDCaHNv+47NNIWgBAQMEAQAAAAEFR1IhApL4XO+VE1pPYn5wnRFyJQKVSc9TX2dO6KIBH6jwvgPaIQKsn5K3VDuutkAa3byXEjmTBcZ4g+zNWsJvVNCm+VwpuVKuIgYCkvhc75UTWk9ifnCdEXIlApVJz1NfZ07oogEfqPC+A9ocNTHNdTAAAIABAACAAAAAgAIAAIAAAAAAAAAAACIGAqyfkrdUO662QBrdvJcSOZMFxniD7M1awm9U0Kb5XCm5HAlI0mgwAACAAQAAgAAAAIACAACAAAAAAAAAAAAAAAEBR1IhApYXaczuYbBM/A+EH639Ir2yIB4PxL46dK/I1V1O9aHgIQLa02HCI/+EP+9gGpxHskjYWFN5hZzXY7RRvwV4UF42ylKuIgIClhdpzO5hsEz8D4Qfrf0ivbIgHg/Evjp0r8jVXU71oeAcNTHNdTAAAIABAACAAAAAgAIAAIABAAAAAAAAACICAtrTYcIj/4Q/72AanEeySNhYU3mFnNdjtFG/BXhQXjbKHAlI0mgwAACAAQAAgAAAAIACAACAAQAAAAAAAAAA")
+		
+		def load_seed_into_decoder(view: scan_views.ScanView):
+			view.decoder.add_data("073318950739065415961602009907670428187212261116")
+			
+		self.run_sequence([
+			FlowStep(MainMenuView, button_data_selection=MainMenuView.SCAN),
+			FlowStep(scan_views.ScanView, before_run=load_psbt_into_decoder),  # simulate read PSBT; ret val is ignored
+			FlowStep(psbt_views.PSBTSelectSeedView, button_data_selection=psbt_views.PSBTSelectSeedView.SCAN_SEED),
+			FlowStep(scan_views.ScanSeedQRView, before_run=load_seed_into_decoder),
+			FlowStep(seed_views.SeedFinalizeView, button_data_selection=seed_views.SeedFinalizeView.FINALIZE),
+			FlowStep(seed_views.SeedOptionsView, is_redirect=True),
+			FlowStep(psbt_views.PSBTOverviewView),
+			FlowStep(psbt_views.PSBTMathView),
+			FlowStep(psbt_views.PSBTAddressDetailsView, button_data_selection=0),
+			FlowStep(psbt_views.PSBTChangeDetailsView, button_data_selection=psbt_views.PSBTChangeDetailsView.SKIP_VERIFICATION),
+			FlowStep(psbt_views.PSBTFinalizeView, button_data_selection=psbt_views.PSBTFinalizeView.APPROVE_PSBT),
+			FlowStep(psbt_views.PSBTSigningErrorView, button_data_selection=psbt_views.PSBTSigningErrorView.SELECT_DIFF_SEED),
+			FlowStep(psbt_views.PSBTSelectSeedView, button_data_selection=psbt_views.PSBTSelectSeedView.SCAN_SEED),
+			FlowStep(scan_views.ScanSeedQRView, before_run=load_seed_into_decoder),
+			FlowStep(seed_views.SeedFinalizeView, button_data_selection=seed_views.SeedFinalizeView.PASSPHRASE),
+			FlowStep(seed_views.SeedAddPassphraseView, screen_return_value=dict(passphrase="abc")),
+			FlowStep(seed_views.SeedReviewPassphraseView, button_data_selection=seed_views.SeedReviewPassphraseView.DONE),
+			FlowStep(seed_views.SeedOptionsView, is_redirect=True),
+			FlowStep(psbt_views.PSBTOverviewView),
+			FlowStep(psbt_views.PSBTMathView),
+			FlowStep(psbt_views.PSBTAddressDetailsView, button_data_selection=0),
+			FlowStep(psbt_views.PSBTChangeDetailsView, button_data_selection=psbt_views.PSBTChangeDetailsView.SKIP_VERIFICATION),
+			FlowStep(psbt_views.PSBTFinalizeView, button_data_selection=psbt_views.PSBTFinalizeView.APPROVE_PSBT),
+			FlowStep(psbt_views.PSBTSignedQRDisplayView),
+			FlowStep(MainMenuView),
+		])
+
+
+	def test_parse_and_display_op_return_content(self):
+		"""
+			PSBTs that include an OP_RETURN should be able to be parsed like any other
+			PSBT and route to the dedicated OP_RETURN View to display the content
+		"""
+		def load_psbt_into_decoder(view: scan_views.ScanView):
+			"""
+				PSBT Tx and Wallet Details
+				- Single Sig Wallet P2WPKH (Native Segwit) with no passphrase
+				- Regtest 0fb882ff m/84'/1'/0' tpubDCfk37PqcQx6nFtFVuYHvRLJHxvYj33NjHkKRyRmWyCjyJ64sYBXyVjsTHaLBp5GLhM91VBgJ8nKDWDu52J2xVRy64c7ybEjjyWQJuQGLcg
+				- 1 Input
+					- 99,992,460 sats
+				- 2 Outputs
+					- 1 Output back to self (bcrt1qvwkhakqhz7m7kmz6332avatsmdy32m644g86vv) of 99,992,296 sats
+					- 1 OP_RETURN: "Chancellor on the brink of third bailout"
+				- Fee 164 sats
+			"""
+			view.decoder.add_data("cHNidP8BAIYCAAAAATpQ10o+gKdZ8ThpKsbfHiHYn3NhvUrQ5DvW0ZWX8jKLAAAAAAD9////AujC9QUAAAAAFgAUY61+2BcXt+tsWoxV1nVw20kVb1UAAAAAAAAAACtqTChDaGFuY2VsbG9yIG9uIHRoZSBicmluayBvZiB0aGlyZCBiYWlsb3V0aQAAAE8BBDWHzwNXmUmVgAAAANRFa7R5gYD84Wbha3d1QnjgfYPOBw87on6cXS32WoyqAsPFtPxB7PRTdbujUnBPUVDh9YUBtwrl4nc0OcRNGvIyEA+4gv9UAACAAQAAgAAAAIAAAQB0AgAAAAGNFK/1X0fP5q+nu5XX7Tk2VRa0EL+jkGI9CHiJvsjZCgAAAAAA/f///wKMw/UFAAAAABYAFIpZMNnUU6cQt8Q0YpZ0pnvsSA5fAAAAAAAAAAAZakwWYml0Y29pbiBpcyBmcmVlIHNwZWVjaGgAAAABAR+Mw/UFAAAAABYAFIpZMNnUU6cQt8Q0YpZ0pnvsSA5fAQMEAQAAACIGAvxDI0eNI1oQ2AU69R7A0jf+hUdilWCgrWHgdzkqlaXMGA+4gv9UAACAAQAAgAAAAIAAAAAAAQAAAAAiAgK9qKtzGWyiRrpmupdA99NVLriz3GQy6cENbyD19sfl/hgPuIL/VAAAgAEAAIAAAACAAAAAAAIAAAAAAA==")
+
+		def load_seed_into_decoder(view: scan_views.ScanView):
+			view.decoder.add_data("114006021552133507590698063102151531110102551496")
+
+		self.run_sequence([
+			FlowStep(MainMenuView, button_data_selection=MainMenuView.SCAN),
+			FlowStep(scan_views.ScanView, before_run=load_psbt_into_decoder),  # simulate read PSBT; ret val is ignored
+			FlowStep(psbt_views.PSBTSelectSeedView, button_data_selection=psbt_views.PSBTSelectSeedView.SCAN_SEED),
+			FlowStep(scan_views.ScanSeedQRView, before_run=load_seed_into_decoder),
+			FlowStep(seed_views.SeedFinalizeView, button_data_selection=seed_views.SeedFinalizeView.FINALIZE),
+			FlowStep(seed_views.SeedOptionsView, is_redirect=True),
+			FlowStep(psbt_views.PSBTOverviewView),
+			FlowStep(psbt_views.PSBTMathView),
+			FlowStep(psbt_views.PSBTChangeDetailsView, button_data_selection=psbt_views.PSBTChangeDetailsView.NEXT),
+
+			# Should route to display OP_RETURN content
+			FlowStep(psbt_views.PSBTOpReturnView, button_data_selection=0),
+
+			# Should be able to sign the psbt
+			FlowStep(psbt_views.PSBTFinalizeView, button_data_selection=psbt_views.PSBTFinalizeView.APPROVE_PSBT),
+			FlowStep(psbt_views.PSBTSignedQRDisplayView),
+			FlowStep(MainMenuView)
+		])

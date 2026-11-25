@@ -1,0 +1,7 @@
+config BR2_PACKAGE_PYTHON_PYCRYPTODOME
+	bool "python-pycryptodome"
+	help
+	  Cryptographic library for Python, installed as the "Crypto"
+	  package.
+
+	  https://www.pycryptodome.org

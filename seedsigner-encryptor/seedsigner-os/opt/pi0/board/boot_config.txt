@@ -1,0 +1,24 @@
+start_file=start_x.elf
+fixup_file=fixup_x.dat
+
+# Kernel location
+kernel=zImage
+
+# How much memory in MB to assign to the GPU on Pi models having
+gpu_mem=64
+
+# Enable Camera module
+start_x=1
+
+# Enable SPI
+dtparam=spi=on
+
+# USB keyboard: run the USB port as a host port only (keyboard on an OTG
+# adapter). dr_mode=host is forced because the BCM2835 OTG ID-pin role
+# detection is unreliable, and so the port can never act as a USB gadget.
+dtoverlay=dwc2,dr_mode=host
+
+# Set the bootloader delay to 0 seconds. The default is 1s if not specified
+boot_delay=0
+disable_splash=1
+force_turbo=1

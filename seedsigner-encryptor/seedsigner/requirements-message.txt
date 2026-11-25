@@ -1,0 +1,14 @@
+# Message-cryptography dependencies.
+#
+# Install this file by itself. seedsigner/requirements.txt is hash-locked, and
+# pip rejects a command that mixes hashed requirements with this file.
+#
+#   pip install -r requirements-message.txt
+#
+# dilithium-py and kyber-py are the prototypes copied into ../third_party (see its README.md).
+# They are not a production cryptography choice. See docs/message_key_derivation.md.
+
+pycryptodome==4.2.0
+PGPy==0.6.0
+-e ../third_party/dilithium-py
+-e ../third_party/kyber-py

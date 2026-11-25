@@ -1,3 +1,44 @@
+# SeedSigner-PGP: one seed for your Bitcoin and your words
+
+[![Watch the video: a PGP-signed message crossing clicking relays](https://img.youtube.com/vi/6-xAVtlHnR8/hqdefault.jpg)](https://youtu.be/6-xAVtlHnR8)
+
+**[Watch the demo on YouTube](https://youtu.be/6-xAVtlHnR8):** the device signs a message, and the signature crosses to a laptop through mechanical relays. No Wi-Fi, no Bluetooth, no light and no shared wire.
+
+**SeedSigner-PGP is a fork of SeedSigner that adds GPG-compatible PGP messaging.** The 12 or 24 words that already guard your bitcoin also give you a PGP key. With it you can sign, verify, encrypt and decrypt messages on a device that never touches a network. Everything SeedSigner does is still here, unchanged.
+
+## An air gap is a physical claim, not a slogan
+
+SeedSigner is called air-gapped because it has no Wi-Fi, Bluetooth or network port. But data still has to get in and out, and it does that through QR codes: a screen that gives off light and a camera that reads it. That's a wireless link. It runs on visible light instead of radio, but it's still an electromagnetic channel between the device and the world, with a sensor on each end.
+
+Every law of physics the device obeys is a possible way in or out:
+
+- **Electromagnetic:** screens, cables and processors radiate signals that can be picked up at a distance. A screen can also flicker or change brightness faster than a person can see.
+- **Optical:** a camera accepts whatever is put in front of it, and an image decoder is a large piece of code to attack. A QR code's error-correction area can carry data that nobody can check by eye.
+- **Sound and vibration:** coils, regulators and fans make noise that changes with the work being done.
+- **Power:** a shared power supply or ground carries tiny changes in current from one device to the next.
+- **Timing and heat:** how long an operation takes, and how warm the chip gets, can say something about the data.
+
+You can't remove all of these. You can choose which channels are open on purpose, make them as narrow as possible, and say plainly what's left.
+
+## What this fork adds
+
+- **PGP that works with GPG:** keys, cleartext signatures and encrypted messages are ordinary OpenPGP, so gpg and other PGP apps read them and the device reads theirs.
+- **More key types from the same seed:** RSA, plus the post-quantum ML-DSA and ML-KEM, each from its own published derivation. Lose the device and you can rebuild every key from your words.
+- **Fingerprint checks:** a new contact key shows its fingerprint before it's saved, in the same form gpg shows. "Doesn't match" is the default button.
+- **A mechanical channel:** the [mechanical relay link](https://gitlab.com/software1015210/mechanical) carries data between two Arduino boards that share nothing but a relay contact. No light, no radio and no shared ground. Each relay is one-way by wiring, at a few bytes a second, so there's no hidden channel the size of a screen. QR codes and a keyboard still work, so you choose the channel that fits your threat model.
+- **A stripped production OS:** the device runs from RAM, writes nothing to the SD card, and keeps only the USB drivers for a keyboard and the relay. No networking, storage, gadget mode, SSH or swap.
+
+The relay doesn't make the device silent. The Pi still radiates, makes noise and draws power, and a compromised device could still hide a few bits inside a random-looking signature or ciphertext. What it changes is the deliberate channel: from a camera and a screen to one switch per direction that is either open or closed.
+
+> **Status:** the message features are a prototype. The post-quantum libraries are learning implementations and the key derivation hasn't had a security review. Don't use it for real secrets yet.
+
+**Read next:**
+- [seedsigner-encryptor/README.md](seedsigner-encryptor/README.md): features, setup, and how to build the production image.
+- [CyberToken Philosophy.md](CyberToken%20Philosophy.md): why the project is built the way it is.
+- [seedsigner-encryptor/backlog/](seedsigner-encryptor/backlog/): where it's going next.
+
+---
+
 # Build an offline, airgapped Bitcoin signing device for less than $50!
 
 ![Image of SeedSigners in Mini Pill Enclosures](docs/img/Mini_Pill_Main_Photo.jpg)
@@ -112,23 +153,23 @@ Instructions to build a SeedSigner OS image (using precisely the same process th
 ## Downloading the Software
 
    
-Download the current Version (0.8.7) software image that is compatible with your  Raspberry Pi Hardware. The Pi Zero 1.3 is the most common and recommended board.
+Download the current Version (0.8.6) software image that is compatible with your  Raspberry Pi Hardware. The Pi Zero 1.3 is the most common and recommended board.
 | Board                 | Download Image Link/Name          |
 | --------------------- | --------------------------------- |
-|**[Raspberry Pi Zero 1.3](https://www.raspberrypi.com/products/raspberry-pi-zero/)**      |[`seedsigner_os.0.8.7.pi0.img`](https://github.com/SeedSigner/seedsigner/releases/download/0.8.7/seedsigner_os.0.8.7.pi0.img)      |
-|[Raspberry Pi Zero W](https://www.raspberrypi.com/products/raspberry-pi-zero-w/)    |[`seedsigner_os.0.8.7.pi0.img`](https://github.com/SeedSigner/seedsigner/releases/download/0.8.7/seedsigner_os.0.8.7.pi0.img)      |
-|[Raspberry Pi Zero 2 W](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/)  |[`seedsigner_os.0.8.7.pi02w.img`](https://github.com/SeedSigner/seedsigner/releases/download/0.8.7/seedsigner_os.0.8.7.pi02w.img)    |
-|[Raspberry Pi 1 Model B/B+](https://www.raspberrypi.com/products/raspberry-pi-1-model-b-plus/) |[`seedsigner_os.0.8.7.pi0.img`](https://github.com/SeedSigner/seedsigner/releases/download/0.8.7/seedsigner_os.0.8.7.pi0.img)      |
-|[Raspberry Pi 2 Model B](https://www.raspberrypi.com/products/raspberry-pi-2-model-b/) |[`seedsigner_os.0.8.7.pi2.img`](https://github.com/SeedSigner/seedsigner/releases/download/0.8.7/seedsigner_os.0.8.7.pi2.img)      |
-|[Raspberry Pi 3 Model B](https://www.raspberrypi.com/products/raspberry-pi-3-model-b/) |[`seedsigner_os.0.8.7.pi02w.img`](https://github.com/SeedSigner/seedsigner/releases/download/0.8.7/seedsigner_os.0.8.7.pi02w.img)    |
-|[Raspberry Pi 4 Model B](https://www.raspberrypi.com/products/raspberry-pi-4-model-b/) |[`seedsigner_os.0.8.7.pi4.img`](https://github.com/SeedSigner/seedsigner/releases/download/0.8.7/seedsigner_os.0.8.7.pi4.img)      |
-|[Raspberry Pi 400](https://www.raspberrypi.com/products/raspberry-pi-400-unit/) |[`seedsigner_os.0.8.7.pi4.img`](https://github.com/SeedSigner/seedsigner/releases/download/0.8.7/seedsigner_os.0.8.7.pi4.img)      |
+|**[Raspberry Pi Zero 1.3](https://www.raspberrypi.com/products/raspberry-pi-zero/)**      |[`seedsigner_os.0.8.6.pi0.img`](https://github.com/SeedSigner/seedsigner/releases/download/0.8.6/seedsigner_os.0.8.6.pi0.img)      |
+|[Raspberry Pi Zero W](https://www.raspberrypi.com/products/raspberry-pi-zero-w/)    |[`seedsigner_os.0.8.6.pi0.img`](https://github.com/SeedSigner/seedsigner/releases/download/0.8.6/seedsigner_os.0.8.6.pi0.img)      |
+|[Raspberry Pi Zero 2 W](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/)  |[`seedsigner_os.0.8.6.pi02w.img`](https://github.com/SeedSigner/seedsigner/releases/download/0.8.6/seedsigner_os.0.8.6.pi02w.img)    |
+|[Raspberry Pi 1 Model B/B+](https://www.raspberrypi.com/products/raspberry-pi-1-model-b-plus/) |[`seedsigner_os.0.8.6.pi0.img`](https://github.com/SeedSigner/seedsigner/releases/download/0.8.6/seedsigner_os.0.8.6.pi0.img)      |
+|[Raspberry Pi 2 Model B](https://www.raspberrypi.com/products/raspberry-pi-2-model-b/) |[`seedsigner_os.0.8.6.pi2.img`](https://github.com/SeedSigner/seedsigner/releases/download/0.8.6/seedsigner_os.0.8.6.pi2.img)      |
+|[Raspberry Pi 3 Model B](https://www.raspberrypi.com/products/raspberry-pi-3-model-b/) |[`seedsigner_os.0.8.6.pi02w.img`](https://github.com/SeedSigner/seedsigner/releases/download/0.8.6/seedsigner_os.0.8.6.pi02w.img)    |
+|[Raspberry Pi 4 Model B](https://www.raspberrypi.com/products/raspberry-pi-4-model-b/) |[`seedsigner_os.0.8.6.pi4.img`](https://github.com/SeedSigner/seedsigner/releases/download/0.8.6/seedsigner_os.0.8.6.pi4.img)      |
+|[Raspberry Pi 400](https://www.raspberrypi.com/products/raspberry-pi-400-unit/) |[`seedsigner_os.0.8.6.pi4.img`](https://github.com/SeedSigner/seedsigner/releases/download/0.8.6/seedsigner_os.0.8.6.pi4.img)      |
 
 Note: If you have physically removed the WiFi component from your board, you will still use the image file of the original (un-modified) hardware. (Our files are compiled/based on the *processor* architecture). Although it is better to spend a few minutes upfront to determine which specific Pi hardware/model you have, if you are still unsure which hardware you have, you can try using the pi0.img file. Making an incorrect choice here will not ruin your board, because this is software, not firmware. 
 
 **Also download** these 2 signature verification files to the same folder  
-[The Plaintext manifest file](https://github.com/SeedSigner/seedsigner/releases/download/0.8.7/seedsigner.0.8.7.sha256.txt)  
-[The Signature of the manifest file](https://github.com/SeedSigner/seedsigner/releases/download/0.8.7/seedsigner.0.8.7.sha256.txt.sig)
+[The Plaintext manifest file](https://github.com/SeedSigner/seedsigner/releases/download/0.8.6/seedsigner.0.8.6.sha256.txt)  
+[The Signature of the manifest file](https://github.com/SeedSigner/seedsigner/releases/download/0.8.6/seedsigner.0.8.6.sha256.txt.sig)
 
 
 Users familiar with older versions of the SeedSigner software might be surprised with how fast their software downloads now are, because since version 0.6.0 the software image files are now 100x smaller! Each image file is now under 42 Megabytes so your downloads and verifications will be very quick now (and might even seem *too* quick)!  
@@ -160,7 +201,7 @@ The result should confirm that 1 key was *either* imported or updated. *Ignore* 
 
 Next, you will run the *verify* command on the signature (.sig) file. (*Verify* must be run from inside the same folder that you downloaded the files into earlier.)   
 ```
-gpg --verify seedsigner.0.8.7.sha256.txt.sig
+gpg --verify seedsigner.0.8.6.sha256.txt.sig
 ```
 
 When the verify command completes successfully, it should display output like this:
@@ -230,22 +271,22 @@ Now that you have confirmed that you do have the real SeedSigner Project's Publi
 
  **On Linux or OSX:** Run this command
 ```
-shasum -a 256 --ignore-missing --check seedsigner.0.8.7.sha256.txt  
+shasum -a 256 --ignore-missing --check seedsigner.0.8.6.sha256.txt  
 ```
 Note: macOS versions earlier than v11 (Big Sur) do not support the `--ignore-missing` flag. You can omit it and disregard any missing file warnings.
 
 **On Windows (inside Powershell):** Run this command
 ```
-CertUtil -hashfile  seedsigner_os.0.8.7.Insert_Your_Pi_Models_binary_here_For_Example_pi02w.img SHA256 
+CertUtil -hashfile  seedsigner_os.0.8.6.Insert_Your_Pi_Models_binary_here_For_Example_pi02w.img SHA256 
 ```
 On Windows, you must then manually compare the resulting file hash value to the corresponding hash value shown inside the .SHA256 cleartext file.
  <BR>
 
 Wait up to 30 seconds for the command to complete, and it should display:
 ```
-seedsigner_os.0.8.7.[Your_Pi_Model_For_Example:pi02w].img: OK
+seedsigner_os.0.8.6.[Your_Pi_Model_For_Example:pi02w].img: OK
 ```
-**If you receive the "OK" message** for your **seedsigner_os.0.8.7.[Your_Pi_Model_For_Example:pi02w].img file**, as shown above, then your verification is fully complete!  
+**If you receive the "OK" message** for your **seedsigner_os.0.8.6.[Your_Pi_Model_For_Example:pi02w].img file**, as shown above, then your verification is fully complete!  
 **All of your downloaded files have now been confirmed as both authentic and unaltered!** You can proceed to create/write your MicroSD card😄😄 !!     
 
 If your file result shows "FAILED", then you must stop here immediately. Do not continue. Contact us for assistance at the Telegram group address above.

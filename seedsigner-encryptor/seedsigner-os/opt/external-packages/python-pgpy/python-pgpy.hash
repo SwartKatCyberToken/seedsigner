@@ -1,0 +1,4 @@
+# sha256 from https://pypi.org/pypi/PGPy/0.6.0/json
+sha256  279c2e353f4c3a319f00bd9bd582456e420f8a3ac6de2b4e9731444746828383  PGPy-0.6.0.tar.gz
+# Locally computed sha256 checksums
+sha256  021fd07226df09efb35190d5e419d0bda811df2975194c64f4773a9a01b08167  LICENSE

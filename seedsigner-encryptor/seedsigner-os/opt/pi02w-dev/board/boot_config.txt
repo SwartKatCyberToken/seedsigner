@@ -1,0 +1,30 @@
+start_file=start_x.elf
+fixup_file=fixup_x.dat
+
+# Kernel location
+kernel=zImage
+
+# How much memory in MB to assign to the GPU on Pi models having
+gpu_mem=64
+
+# Enable Camera module
+start_x=1
+
+# Enable SPI
+dtparam=spi=on
+
+# Set the bootloader delay to 0 seconds. The default is 1s if not specified
+boot_delay=0
+disable_splash=1
+
+### Dev image differences from the release boot_config.txt ###
+
+# Wifi and bluetooth stay enabled (release adds disable-wifi/disable-bt here)
+
+# USB relay: expose the USB port as an ethernet gadget when plugged into a
+# computer (see docs/dev_images.md). dwc2 is built dual-role, so a keyboard
+# on an OTG adapter still works.
+dtoverlay=dwc2
+
+# HDMI console output even when the display is plugged in after boot
+hdmi_force_hotplug=1

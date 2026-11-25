@@ -1,0 +1,26 @@
+Build with the setuptools that Buildroot 2024.11 ships (75.3).
+
+setuptools >= 77 is only needed for the PEP 639 license fields. Use the
+older license table instead; the build output is otherwise the same.
+
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -1,6 +1,6 @@
+ [build-system]
+-# 77: license as an SPDX expression (PEP 639)
+-requires = ["setuptools>=77"]
++# Buildroot 2024.11 ships setuptools 75.3, which predates PEP 639
++requires = ["setuptools"]
+ build-backend = "setuptools.build_meta"
+ 
+ [project]
+@@ -12,8 +12,7 @@
+ # See LICENSE.rst: the code from PyCrypto is in the public domain (Unlicense),
+ # mldsa-native and mlkem-native are under Apache-2.0 OR ISC OR MIT,
+ # the rest is under the BSD 2-Clause license
+-license = "BSD-2-Clause AND Unlicense AND MIT"
+-license-files = ["LICENSE.rst", "src/mldsa-native/LICENSE", "src/mlkem-native/LICENSE"]
++license = {text = "BSD-2-Clause AND Unlicense AND MIT"}
+ requires-python = ">=3.9"
+ classifiers = [
+     "Development Status :: 5 - Production/Stable",

@@ -1,0 +1,27 @@
+# CyberToken image build. apt and pip ask the software-conservation container first.
+# Does not replace Dockerfile. conserve container up publishes the restore library.
+# conserve container build points host.docker.internal at the host gateway.
+# Invariant: a hit installs only the files the container returned.
+
+FROM python:3.10-bullseye
+COPY --from=software-conservation:local /opt/conserve-client/ /opt/conserve-client/
+ENV PATH="/opt/conserve-client/bin:${PATH}"
+
+# install zbar dependencyy
+RUN conserve-in-build apt-get -qq update
+RUN conserve-in-build apt-get -y -qq install zbar-tools
+
+# temp copy requirements files to local repo to do pip3 install
+COPY ../requirements.txt /requirements.txt
+COPY ../tests/requirements.txt /tests-requirements.txt
+
+WORKDIR /
+RUN conserve-in-build pip3 install -r requirements.txt
+RUN conserve-in-build pip3 install -r tests-requirements.txt
+
+# clean up copied files
+RUN rm /requirements.txt
+RUN rm /tests-requirements.txt
+
+# set working dir
+WORKDIR /seedsigner

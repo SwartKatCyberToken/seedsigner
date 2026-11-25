@@ -1,0 +1,30 @@
+# USB keyboard and USB relay additions, merged on top of kernel.config.
+# Only what they need: a host-only USB controller, HID and evdev
+# (/dev/input/event*) for seedsigner/hardware/usb_keyboard.py, and CDC-ACM
+# (/dev/ttyACM*) for the Arduino Leonardos in seedsigner/hardware/usb_relay.py.
+# No USB gadget, networking, storage, other serial drivers, hidraw or hiddev.
+# NOTE: kernel.config sets CONFIG_MODULES=n, so everything here must be
+# built-in (=y), never =m.
+
+# Power domains -- REQUIRED for USB on the Zero/Zero W. CONFIG_RASPBERRYPI_POWER
+# depends on CONFIG_PM, which nothing else in the pi0 config selects. Without it
+# the dwc2 block is unpowered and its probe fails ("Bad value for GSNPSID").
+CONFIG_PM=y
+CONFIG_RASPBERRYPI_POWER=y
+
+# USB host controller (dwc2, host mode only; boot_config.txt sets dr_mode=host)
+CONFIG_USB_SUPPORT=y
+CONFIG_USB=y
+CONFIG_USB_DWC2=y
+CONFIG_USB_DWC2_HOST=y
+
+# USB keyboard
+CONFIG_INPUT=y
+CONFIG_INPUT_EVDEV=y
+CONFIG_HID=y
+CONFIG_HID_GENERIC=y
+CONFIG_USB_HID=y
+
+# USB relay: an Arduino Leonardo is a CDC-ACM serial device
+CONFIG_TTY=y
+CONFIG_USB_ACM=y

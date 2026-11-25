@@ -1,0 +1,11 @@
+config BR2_PACKAGE_PYTHON_PGPY
+	bool "python-pgpy"
+	depends on BR2_PACKAGE_HOST_RUSTC_TARGET_ARCH_SUPPORTS # python-cryptography
+	select BR2_PACKAGE_PYTHON_CRYPTOGRAPHY # runtime
+	select BR2_PACKAGE_PYTHON_PYASN1 # runtime
+	select BR2_PACKAGE_PYTHON3_BZIP2 # runtime, pgpy.constants imports bz2
+	select BR2_PACKAGE_PYTHON3_ZLIB # runtime
+	help
+	  Pretty Good Privacy for Python: OpenPGP in pure Python.
+
+	  https://github.com/SecurityInnovation/PGPy
